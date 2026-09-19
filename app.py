@@ -95,8 +95,8 @@ def menu_input_absen(jenis_pegawai):
     bulan = col1.selectbox("Pilih Bulan", list(range(1, 13)), index=datetime.now().month - 1)
     tahun = col2.number_input("Tahun", min_value=2020, max_value=2050, value=datetime.now().year)
     
-    # Tarik data pegawai
-    res_peg = supabase.table("pegawai").select("id, nama, nip").eq("unit_kerja", st.session_state.unit_kerja)
+    # Tarik data pegawai termasuk golongan, status, dan unit_kerja
+    res_peg = supabase.table("pegawai").select("id, nama, nip, golongan, status, unit_kerja").eq("unit_kerja", st.session_state.unit_kerja)
     if jenis_pegawai == "PNS": res_peg = res_peg.eq("status", "PNS").execute()
     else: res_peg = res_peg.in_("status", ["PPPK", "PPPK PW"]).execute()
     
@@ -122,12 +122,15 @@ def menu_input_absen(jenis_pegawai):
         if not abs_row.empty:
             row = abs_row.iloc[0].to_dict()
             row['nama'], row['nip'] = peg['nama'], peg['nip']
+            row['golongan'], row['status'], row['unit_kerja'] = peg['golongan'], peg['status'], peg['unit_kerja']
         else:
-            row = {'pegawai_id': peg['id'], 'nama': peg['nama'], 'nip': peg['nip'], 'hari_kerja': 0, 'hadir': 0, 'telat_masuk': 0, 'cepat_pulang': 0, 'tanpa_keterangan': 0, 'cuti_sakit_izin': 0, 'dinas_luar': 0, 'keterangan': ''}
+            row = {'pegawai_id': peg['id'], 'nama': peg['nama'], 'nip': peg['nip'], 
+                   'golongan': peg['golongan'], 'status': peg['status'], 'unit_kerja': peg['unit_kerja'],
+                   'hari_kerja': 0, 'hadir': 0, 'telat_masuk': 0, 'cepat_pulang': 0, 'tanpa_keterangan': 0, 'cuti_sakit_izin': 0, 'dinas_luar': 0, 'keterangan': ''}
         data_gabung.append(row)
         
     df_tampil = pd.DataFrame(data_gabung)
-    kolom_tampil = ['nama', 'nip', 'hari_kerja', 'hadir', 'telat_masuk', 'cepat_pulang', 'tanpa_keterangan', 'cuti_sakit_izin', 'dinas_luar', 'keterangan']
+    kolom_tampil = ['nama', 'nip', 'golongan', 'status', 'unit_kerja', 'hari_kerja', 'hadir', 'telat_masuk', 'cepat_pulang', 'tanpa_keterangan', 'cuti_sakit_izin', 'dinas_luar', 'keterangan']
     
     # Tombol Download
     excel_data = convert_df_to_excel(df_tampil[kolom_tampil])
@@ -138,7 +141,8 @@ def menu_input_absen(jenis_pegawai):
         st.dataframe(df_tampil[kolom_tampil], use_container_width=True)
     else:
         st.info("💡 Ketik langsung pada tabel di bawah seperti menggunakan Excel. Jangan lupa klik tombol Simpan di bawah tabel.")
-        edited_df = st.data_editor(df_tampil[kolom_tampil], disabled=['nama', 'nip'], use_container_width=True, num_rows="fixed")
+        # Mengunci kolom identitas pegawai agar tidak bisa diedit
+        edited_df = st.data_editor(df_tampil[kolom_tampil], disabled=['nama', 'nip', 'golongan', 'status', 'unit_kerja'], use_container_width=True, num_rows="fixed")
         
         col_btn1, col_btn2 = st.columns(2)
         simpan_draf = col_btn1.button("💾 Simpan Sementara (Bisa diedit lagi)")
