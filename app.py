@@ -39,7 +39,6 @@ def login_page():
         
         if submit:
             response = supabase.table("users").select("*").eq("username", username).eq("password", password).execute()
-            
             if len(response.data) > 0:
                 user = response.data[0]
                 st.session_state.logged_in = True
@@ -51,9 +50,30 @@ def login_page():
                 st.error("Username atau Password salah!")
 
 def menu_dashboard():
-    st.header("Dashboard Realtime")
-    st.info("Menampilkan daftar sekolah yang telah menginput rekap absensi bulan ini.")
-    st.write("*Visualisasi data atau tabel daftar sekolah akan muncul di sini.*")
+    st.header("Dashboard Realtime Cabdis")
+    st.info("Daftar sekolah yang telah melakukan penginputan rekap absensi.")
+    
+    col1, col2 = st.columns(2)
+    bulan = col1.selectbox("Pilih Bulan", list(range(1, 13)), index=datetime.now().month - 1)
+    tahun = col2.number_input("Tahun", min_value=2020, max_value=2050, value=datetime.now().year)
+    
+    st.write("---")
+    res_absen = supabase.table("absensi").select("pegawai_id").eq("bulan", bulan).eq("tahun", tahun).execute()
+    
+    if res_absen.data:
+        df_absen = pd.DataFrame(res_absen.data)
+        res_peg = supabase.table("pegawai").select("id, unit_kerja").execute()
+        
+        if res_peg.data:
+            df_peg = pd.DataFrame(res_peg.data)
+            df_gabung = pd.merge(df_absen, df_peg, left_on='pegawai_id', right_on='id')
+            sekolah_sudah = df_gabung['unit_kerja'].dropna().unique()
+            
+            st.subheader(f"Total: {len(sekolah_sudah)} Sekolah")
+            for sek in sorted(sekolah_sudah):
+                st.success(f"✅ {sek} telah melakukan penginputan")
+    else:
+        st.warning(f"Belum ada data absensi yang masuk pada bulan {bulan} tahun {tahun}.")
 
 def menu_data_pegawai():
     st.header(f"Data Pegawai - {st.session_state.unit_kerja}")
@@ -67,10 +87,7 @@ def menu_data_pegawai():
             submit_pegawai = st.form_submit_button("Simpan Pegawai")
             
             if submit_pegawai:
-                data = {
-                    "nama": nama, "nip": nip, "golongan": gol, 
-                    "status": status, "unit_kerja": st.session_state.unit_kerja
-                }
+                data = {"nama": nama, "nip": nip, "golongan": gol, "status": status, "unit_kerja": st.session_state.unit_kerja}
                 supabase.table("pegawai").insert(data).execute()
                 st.success("Pegawai berhasil ditambahkan!")
                 st.rerun()
@@ -78,8 +95,7 @@ def menu_data_pegawai():
     st.subheader("Daftar Pegawai")
     response = supabase.table("pegawai").select("*").eq("unit_kerja", st.session_state.unit_kerja).execute()
     if response.data:
-        df = pd.DataFrame(response.data)
-        st.dataframe(df, use_container_width=True)
+        st.dataframe(pd.DataFrame(response.data), use_container_width=True)
 
 def menu_input_absen(jenis_pegawai):
     st.header(f"Input Rekap Absensi - {jenis_pegawai}")
@@ -96,7 +112,6 @@ def menu_input_absen(jenis_pegawai):
         st.warning(f"Belum ada data pegawai {jenis_pegawai} di sekolah ini.")
         return
 
-    st.write("Silakan input data rekap pada form di bawah:")
     with st.form(f"form_absen_{jenis_pegawai}"):
         pegawai_terpilih = st.selectbox("Pilih Pegawai", [f"{p['nama']} - {p['nip']}" for p in res.data])
         pegawai_id = res.data[[f"{p['nama']} - {p['nip']}" for p in res.data].index(pegawai_terpilih)]['id']
@@ -124,6 +139,71 @@ def menu_input_absen(jenis_pegawai):
             supabase.table("absensi").insert(absen_data).execute()
             st.success("Rekap absensi berhasil disimpan!")
 
+def menu_indisipliner(jenis_pegawai):
+    st.header(f"Data Indisipliner {jenis_pegawai}")
+    
+    col1, col2, col3 = st.columns(3)
+    periode = col1.selectbox("Filter Periode", ["1 Bulan Terakhir", "1 Tahun Terakhir"])
+    tahun_p = col2.number_input("Pilih Tahun", min_value=2020, max_value=2050, value=datetime.now().year)
+    bulan_p = None
+    if periode == "1 Bulan Terakhir":
+        bulan_p = col3.selectbox("Pilih Bulan", list(range(1, 13)), index=datetime.now().month - 1)
+
+    st.write("---")
+    
+    # Ambil Data Pegawai
+    query_peg = supabase.table("pegawai").select("*")
+    if st.session_state.role == 'admin_sekolah':
+        query_peg = query_peg.eq("unit_kerja", st.session_state.unit_kerja)
+        
+    if jenis_pegawai == "PNS": query_peg = query_peg.eq("status", "PNS")
+    else: query_peg = query_peg.in_("status", ["PPPK", "PPPK PW"])
+        
+    res_peg = query_peg.execute()
+    
+    if not res_peg.data:
+        st.warning(f"Belum ada data pegawai {jenis_pegawai}.")
+        return
+        
+    df_peg = pd.DataFrame(res_peg.data)
+    
+    # Ambil Data Absensi
+    query_abs = supabase.table("absensi").select("*").eq("tahun", tahun_p)
+    if periode == "1 Bulan Terakhir":
+        query_abs = query_abs.eq("bulan", bulan_p)
+        
+    res_abs = query_abs.execute()
+    if not res_abs.data:
+        st.info("Belum ada rekap absensi pada periode yang dipilih.")
+        return
+        
+    df_abs = pd.DataFrame(res_abs.data)
+    
+    # Agregasi (Penjumlahan data bulanan menjadi total)
+    df_abs_grouped = df_abs.groupby('pegawai_id').agg({
+        'hari_kerja': 'sum', 'hadir': 'sum', 'telat_masuk': 'sum',
+        'cepat_pulang': 'sum', 'tanpa_keterangan': 'sum', 
+        'cuti_sakit_izin': 'sum', 'dinas_luar': 'sum',
+        'keterangan': lambda x: ' | '.join(set([str(i) for i in x if i]))
+    }).reset_index()
+    
+    # Penggabungan dan Pengurutan
+    df_final = pd.merge(df_peg, df_abs_grouped, left_on='id', right_on='pegawai_id', how='inner')
+    if df_final.empty:
+        st.info("Belum ada rekap absensi yang cocok dengan data pegawai.")
+        return
+        
+    df_final = df_final.sort_values(by=['tanpa_keterangan', 'telat_masuk'], ascending=[False, False])
+    
+    # Format Tampilan Tabel
+    kolom_tampil = ['nama', 'nip', 'golongan', 'status', 'unit_kerja', 'hari_kerja', 'hadir', 'telat_masuk', 'cepat_pulang', 'tanpa_keterangan', 'cuti_sakit_izin', 'dinas_luar', 'keterangan']
+    df_final = df_final[kolom_tampil]
+    df_final.columns = ['Nama', 'NIP', 'Gol', 'STATUS', 'UNIT KERJA', 'HARI KERJA', 'HADIR (hari)', 'TELAT MASUK (menit)', 'CEPAT PULANG (menit)', 'TANPA KETERANGAN (hari)', 'CUTI/SAKIT/IZIN (hari)', 'DINAS LUAR (hari)', 'KETERANGAN']
+    df_final.reset_index(drop=True, inplace=True)
+    df_final.index += 1
+    
+    st.dataframe(df_final, use_container_width=True)
+
 def menu_tambah_akun():
     st.header("Manajemen Akun Admin")
     with st.form("form_akun"):
@@ -145,6 +225,7 @@ def menu_tambah_akun():
     res_akun = supabase.table("users").select("id, nama, username, unit_kerja, role").execute()
     if res_akun.data:
         st.dataframe(pd.DataFrame(res_akun.data), use_container_width=True)
+
 
 if not st.session_state.logged_in:
     login_page()
@@ -178,9 +259,5 @@ else:
     elif pilihan == "Input Rekap PNS": menu_input_absen("PNS")
     elif pilihan == "Input Rekap PPPK": menu_input_absen("PPPK")
     elif pilihan == "Tambah Akun Admin": menu_tambah_akun()
-    elif pilihan == "Data Indisipliner PNS": 
-        st.header("Data Indisipliner PNS")
-        st.write("*Tabel pengurutan akan segera dihubungkan dengan database.*")
-    elif pilihan == "Data Indisipliner PPPK": 
-        st.header("Data Indisipliner PPPK")
-        st.write("*Tabel pengurutan akan segera dihubungkan dengan database.*")
+    elif pilihan == "Data Indisipliner PNS": menu_indisipliner("PNS")
+    elif pilihan == "Data Indisipliner PPPK": menu_indisipliner("PPPK")
