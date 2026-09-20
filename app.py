@@ -167,11 +167,10 @@ def menu_rekap_tahunan():
     
     st.write("---")
     
-    # 1. Ambil data pegawai sesuai status gabungan
     query_peg = supabase.table("pegawai").select("*").eq("unit_kerja", st.session_state.unit_kerja)
     if status_p == "PNS":
         res_peg = query_peg.eq("status", "PNS").execute()
-    else: # Menangkap PPPK dan PPPK PW sekaligus
+    else:
         res_peg = query_peg.in_("status", ["PPPK", "PPPK PW"]).execute()
         
     if not res_peg.data:
@@ -181,7 +180,6 @@ def menu_rekap_tahunan():
     df_peg = pd.DataFrame(res_peg.data)
     pegawai_ids = df_peg['id'].tolist()
     
-    # 2. Ambil seluruh data absensi pada tahun yang dipilih
     res_abs = supabase.table("absensi").select("*").eq("tahun", tahun_p).in_("pegawai_id", pegawai_ids).execute()
     if not res_abs.data:
         st.info(f"Belum ada data rekap absensi yang diinput untuk tahun {tahun_p}.")
@@ -189,7 +187,85 @@ def menu_rekap_tahunan():
         
     df_abs = pd.DataFrame(res_abs.data)
     
-    # 3. Akumulasi data bulanan (bulan 1 s/d 12 dijumlahkan)
+    df_abs_grouped = df_abs.groupby('pegawai_id').agg({
+        'hari_kerja': 'sum', 'hadir': 'sum', 'telat_masuk': 'sum',
+        'cepat_pulang': 'sum', 'tanpa_keterangan': 'sum', 
+        'cuti_sakit_izin': 'sum', 'dinas_luar': 'sum'
+    }).reset_index()
+    
+    df_final = pd.merge(df_peg, df_abs_grouped, left_on='id', right_on='pegawai_id', how='left').fillna(0)
+    
+    golongan_order = {
+        'IV.E': 17, 'IV.D': 16, 'IV.C': 15, 'IV.B': 14, 'IV.A': 13,
+        'III.D': 12, 'III.C': 11, 'III.B': 10, 'III.A': 9,
+        'II.D': 8, 'II.C': 7, 'II.B': 6, 'II.A': 5,
+        'I.D': 4, 'I.C': 3, 'I.B': 2, 'I.A': 1
+    }
+    df_final['gol_weight'] = df_final['golongan'].apply(lambda x: golongan_order.get(str(x).strip().replace('/', '.').replace(' ', '').upper(), 0))
+    df_final = df_final.sort_values(by=['gol_weight', 'nama'], ascending=[False, True])
+    
+    kolom_tampil = ['nama', 'nip', 'golongan', 'status', 'hari_kerja', 'hadir', 'telat_masuk', 'cepat_pulang', 'tanpa_keterangan', 'cuti_sakit_izin', 'dinas_luar']
+    df_tampil = df_final[kolom_tampil].copy()
+    
+    for col in ['hari_kerja', 'hadir', 'telat_masuk', 'cepat_pulang', 'tanpa_keterangan', 'cuti_sakit_izin', 'dinas_luar']:
+        df_tampil[col] = df_tampil[col].astype(int)
+        
+    df_tampil.columns = ['Nama', 'NIP', 'Gol', 'Status', 'Total Hari Kerja', 'Total Hadir', 'Total Telat (mnt)', 'Total Cepat Pulang (mnt)', 'Total TK (hari)', 'Total Cuti/Izin (hari)', 'Total DL (hari)']
+    df_tampil.index = range(1, len(df_tampil) + 1)
+    
+    excel_data = convert_df_to_excel(df_tampil)
+    st.download_button(label="📥 Download Rekap Tahunan (Excel)", data=excel_data, file_name=f"Rekap_Tahunan_{status_p}_{tahun_p}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    
+    st.dataframe(df_tampil, use_container_width=True)
+
+# FITUR BARU: MENU REKAP MULTI-TAHUN CABDIS
+def menu_rekap_cabdis():
+    st.header("Rekap Absensi Multi-Tahun Cabdis")
+    
+    # Tarik nama-nama sekolah dari tabel users
+    res_sekolah = supabase.table("users").select("unit_kerja").eq("role", "admin_sekolah").execute()
+    list_sekolah = sorted(list(set([s['unit_kerja'] for s in res_sekolah.data]))) if res_sekolah.data else []
+    
+    col1, col2, col3, col4 = st.columns(4)
+    sekolah_p = col1.selectbox("Pilih Sekolah", list_sekolah)
+    tahun_awal = col2.number_input("Dari Tahun", min_value=2020, max_value=2050, value=datetime.now().year - 1)
+    tahun_akhir = col3.number_input("Sampai Tahun", min_value=2020, max_value=2050, value=datetime.now().year)
+    status_p = col4.selectbox("Filter Status Pegawai", ["PNS", "PPPK"])
+    
+    st.write("---")
+    
+    if tahun_awal > tahun_akhir:
+        st.error("Tahun awal tidak boleh lebih besar dari tahun akhir.")
+        return
+        
+    if not sekolah_p:
+        st.warning("Belum ada data sekolah yang terdaftar.")
+        return
+
+    # 1. Ambil data pegawai sesuai sekolah dan status
+    query_peg = supabase.table("pegawai").select("*").eq("unit_kerja", sekolah_p)
+    if status_p == "PNS":
+        res_peg = query_peg.eq("status", "PNS").execute()
+    else:
+        res_peg = query_peg.in_("status", ["PPPK", "PPPK PW"]).execute()
+        
+    if not res_peg.data:
+        st.warning(f"Belum ada data pegawai dengan kategori {status_p} di {sekolah_p}.")
+        return
+        
+    df_peg = pd.DataFrame(res_peg.data)
+    pegawai_ids = df_peg['id'].tolist()
+    
+    # 2. Ambil seluruh data absensi berdasarkan RENTANG TAHUN
+    res_abs = supabase.table("absensi").select("*").gte("tahun", tahun_awal).lte("tahun", tahun_akhir).in_("pegawai_id", pegawai_ids).execute()
+    
+    if not res_abs.data:
+        st.info(f"Belum ada data rekap absensi yang diinput untuk {sekolah_p} pada rentang {tahun_awal} s.d {tahun_akhir}.")
+        return
+        
+    df_abs = pd.DataFrame(res_abs.data)
+    
+    # 3. Akumulasi total data absensi seluruh bulan di rentang tahun tersebut
     df_abs_grouped = df_abs.groupby('pegawai_id').agg({
         'hari_kerja': 'sum', 'hadir': 'sum', 'telat_masuk': 'sum',
         'cepat_pulang': 'sum', 'tanpa_keterangan': 'sum', 
@@ -221,7 +297,7 @@ def menu_rekap_tahunan():
     
     # 7. Tombol Unduh
     excel_data = convert_df_to_excel(df_tampil)
-    st.download_button(label="📥 Download Rekap Tahunan (Excel)", data=excel_data, file_name=f"Rekap_Tahunan_{status_p}_{tahun_p}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    st.download_button(label="📥 Download Rekap (Excel)", data=excel_data, file_name=f"Rekap_{sekolah_p}_{status_p}_{tahun_awal}-{tahun_akhir}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
     
     st.dataframe(df_tampil, use_container_width=True)
 
@@ -310,7 +386,8 @@ else:
         st.divider()
         
         if st.session_state.role == 'admin_cabdis':
-            pilihan = st.radio("Pilih Menu", ["Dashboard", "Buka Kunci Absensi", "Data Indisipliner PNS", "Data Indisipliner PPPK", "Tambah Akun Admin"])
+            # Menu Rekap Multi-Tahun ditambahkan ke Sidebar Cabdis
+            pilihan = st.radio("Pilih Menu", ["Dashboard", "Rekap Multi-Tahun", "Buka Kunci Absensi", "Data Indisipliner PNS", "Data Indisipliner PPPK", "Tambah Akun Admin"])
         else:
             pilihan = st.radio("Pilih Menu", ["Data Pegawai", "Input Rekap PNS", "Input Rekap PPPK", "Rekap Tahunan", "Data Indisipliner PNS", "Data Indisipliner PPPK"])
             
@@ -324,6 +401,7 @@ else:
     elif pilihan == "Input Rekap PNS": menu_input_absen("PNS")
     elif pilihan == "Input Rekap PPPK": menu_input_absen("PPPK")
     elif pilihan == "Rekap Tahunan": menu_rekap_tahunan()
+    elif pilihan == "Rekap Multi-Tahun": menu_rekap_cabdis()
     elif pilihan == "Buka Kunci Absensi": menu_buka_kunci()
     elif pilihan == "Tambah Akun Admin": menu_tambah_akun()
     elif pilihan == "Data Indisipliner PNS": menu_indisipliner("PNS")
