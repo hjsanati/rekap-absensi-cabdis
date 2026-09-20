@@ -163,14 +163,19 @@ def menu_rekap_tahunan():
     st.header(f"Rekap Absensi Tahunan - {st.session_state.unit_kerja}")
     col1, col2 = st.columns(2)
     tahun_p = col1.number_input("Pilih Tahun", min_value=2020, max_value=2050, value=datetime.now().year)
-    status_p = col2.selectbox("Filter Status Pegawai", ["PNS", "PPPK", "PPPK PW"])
+    status_p = col2.selectbox("Filter Status Pegawai", ["PNS", "PPPK"])
     
     st.write("---")
     
-    # 1. Ambil data pegawai sesuai status
-    res_peg = supabase.table("pegawai").select("*").eq("unit_kerja", st.session_state.unit_kerja).eq("status", status_p).execute()
+    # 1. Ambil data pegawai sesuai status gabungan
+    query_peg = supabase.table("pegawai").select("*").eq("unit_kerja", st.session_state.unit_kerja)
+    if status_p == "PNS":
+        res_peg = query_peg.eq("status", "PNS").execute()
+    else: # Menangkap PPPK dan PPPK PW sekaligus
+        res_peg = query_peg.in_("status", ["PPPK", "PPPK PW"]).execute()
+        
     if not res_peg.data:
-        st.warning(f"Belum ada data pegawai dengan status {status_p} di sekolah ini.")
+        st.warning(f"Belum ada data pegawai dengan kategori {status_p} di sekolah ini.")
         return
         
     df_peg = pd.DataFrame(res_peg.data)
@@ -201,7 +206,6 @@ def menu_rekap_tahunan():
         'II.D': 8, 'II.C': 7, 'II.B': 6, 'II.A': 5,
         'I.D': 4, 'I.C': 3, 'I.B': 2, 'I.A': 1
     }
-    # Membuat bobot sorting untuk menghindari error huruf abjad (Misal: baca IV/a menjadi IV.A)
     df_final['gol_weight'] = df_final['golongan'].apply(lambda x: golongan_order.get(str(x).strip().replace('/', '.').replace(' ', '').upper(), 0))
     df_final = df_final.sort_values(by=['gol_weight', 'nama'], ascending=[False, True])
     
@@ -308,7 +312,6 @@ else:
         if st.session_state.role == 'admin_cabdis':
             pilihan = st.radio("Pilih Menu", ["Dashboard", "Buka Kunci Absensi", "Data Indisipliner PNS", "Data Indisipliner PPPK", "Tambah Akun Admin"])
         else:
-            # Menu Rekap Tahunan ditambahkan ke pilihan menu admin sekolah
             pilihan = st.radio("Pilih Menu", ["Data Pegawai", "Input Rekap PNS", "Input Rekap PPPK", "Rekap Tahunan", "Data Indisipliner PNS", "Data Indisipliner PPPK"])
             
         if st.button("Logout"):
