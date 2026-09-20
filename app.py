@@ -95,7 +95,6 @@ def menu_input_absen(jenis_pegawai):
     bulan = col1.selectbox("Pilih Bulan", list(range(1, 13)), index=datetime.now().month - 1)
     tahun = col2.number_input("Tahun", min_value=2020, max_value=2050, value=datetime.now().year)
     
-    # Tarik data pegawai termasuk golongan, status, dan unit_kerja
     res_peg = supabase.table("pegawai").select("id, nama, nip, golongan, status, unit_kerja").eq("unit_kerja", st.session_state.unit_kerja)
     if jenis_pegawai == "PNS": res_peg = res_peg.eq("status", "PNS").execute()
     else: res_peg = res_peg.in_("status", ["PPPK", "PPPK PW"]).execute()
@@ -107,7 +106,6 @@ def menu_input_absen(jenis_pegawai):
     df_peg = pd.DataFrame(res_peg.data)
     pegawai_ids = df_peg['id'].tolist()
     
-    # Tarik data absensi yang sudah ada
     res_abs = supabase.table("absensi").select("*").eq("bulan", bulan).eq("tahun", tahun).in_("pegawai_id", pegawai_ids).execute()
     df_abs = pd.DataFrame(res_abs.data) if res_abs.data else pd.DataFrame()
     
@@ -115,7 +113,6 @@ def menu_input_absen(jenis_pegawai):
     if not df_abs.empty and 'is_locked' in df_abs.columns and df_abs['is_locked'].any():
         is_locked = True
             
-    # Sinkronisasi data pegawai dengan absensi
     data_gabung = []
     for _, peg in df_peg.iterrows():
         abs_row = df_abs[df_abs['pegawai_id'] == peg['id']] if not df_abs.empty else pd.DataFrame()
@@ -132,7 +129,6 @@ def menu_input_absen(jenis_pegawai):
     df_tampil = pd.DataFrame(data_gabung)
     kolom_tampil = ['nama', 'nip', 'golongan', 'status', 'unit_kerja', 'hari_kerja', 'hadir', 'telat_masuk', 'cepat_pulang', 'tanpa_keterangan', 'cuti_sakit_izin', 'dinas_luar', 'keterangan']
     
-    # Tombol Download
     excel_data = convert_df_to_excel(df_tampil[kolom_tampil])
     st.download_button(label="📥 Download Data ke Excel", data=excel_data, file_name=f"Rekap_{jenis_pegawai}_{bulan}_{tahun}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
     
@@ -141,7 +137,6 @@ def menu_input_absen(jenis_pegawai):
         st.dataframe(df_tampil[kolom_tampil], use_container_width=True)
     else:
         st.info("💡 Ketik langsung pada tabel di bawah seperti menggunakan Excel. Jangan lupa klik tombol Simpan di bawah tabel.")
-        # Mengunci kolom identitas pegawai agar tidak bisa diedit
         edited_df = st.data_editor(df_tampil[kolom_tampil], disabled=['nama', 'nip', 'golongan', 'status', 'unit_kerja'], use_container_width=True, num_rows="fixed")
         
         col_btn1, col_btn2 = st.columns(2)
@@ -163,6 +158,68 @@ def menu_input_absen(jenis_pegawai):
             supabase.table("absensi").insert(new_data).execute()
             st.success("Data absensi berhasil diperbarui!")
             st.rerun()
+
+def menu_rekap_tahunan():
+    st.header(f"Rekap Absensi Tahunan - {st.session_state.unit_kerja}")
+    col1, col2 = st.columns(2)
+    tahun_p = col1.number_input("Pilih Tahun", min_value=2020, max_value=2050, value=datetime.now().year)
+    status_p = col2.selectbox("Filter Status Pegawai", ["PNS", "PPPK", "PPPK PW"])
+    
+    st.write("---")
+    
+    # 1. Ambil data pegawai sesuai status
+    res_peg = supabase.table("pegawai").select("*").eq("unit_kerja", st.session_state.unit_kerja).eq("status", status_p).execute()
+    if not res_peg.data:
+        st.warning(f"Belum ada data pegawai dengan status {status_p} di sekolah ini.")
+        return
+        
+    df_peg = pd.DataFrame(res_peg.data)
+    pegawai_ids = df_peg['id'].tolist()
+    
+    # 2. Ambil seluruh data absensi pada tahun yang dipilih
+    res_abs = supabase.table("absensi").select("*").eq("tahun", tahun_p).in_("pegawai_id", pegawai_ids).execute()
+    if not res_abs.data:
+        st.info(f"Belum ada data rekap absensi yang diinput untuk tahun {tahun_p}.")
+        return
+        
+    df_abs = pd.DataFrame(res_abs.data)
+    
+    # 3. Akumulasi data bulanan (bulan 1 s/d 12 dijumlahkan)
+    df_abs_grouped = df_abs.groupby('pegawai_id').agg({
+        'hari_kerja': 'sum', 'hadir': 'sum', 'telat_masuk': 'sum',
+        'cepat_pulang': 'sum', 'tanpa_keterangan': 'sum', 
+        'cuti_sakit_izin': 'sum', 'dinas_luar': 'sum'
+    }).reset_index()
+    
+    # 4. Gabungkan ke data pegawai
+    df_final = pd.merge(df_peg, df_abs_grouped, left_on='id', right_on='pegawai_id', how='left').fillna(0)
+    
+    # 5. Logika Pengurutan Golongan (Tertinggi ke Terendah)
+    golongan_order = {
+        'IV.E': 17, 'IV.D': 16, 'IV.C': 15, 'IV.B': 14, 'IV.A': 13,
+        'III.D': 12, 'III.C': 11, 'III.B': 10, 'III.A': 9,
+        'II.D': 8, 'II.C': 7, 'II.B': 6, 'II.A': 5,
+        'I.D': 4, 'I.C': 3, 'I.B': 2, 'I.A': 1
+    }
+    # Membuat bobot sorting untuk menghindari error huruf abjad (Misal: baca IV/a menjadi IV.A)
+    df_final['gol_weight'] = df_final['golongan'].apply(lambda x: golongan_order.get(str(x).strip().replace('/', '.').replace(' ', '').upper(), 0))
+    df_final = df_final.sort_values(by=['gol_weight', 'nama'], ascending=[False, True])
+    
+    # 6. Pemformatan Tampilan
+    kolom_tampil = ['nama', 'nip', 'golongan', 'status', 'hari_kerja', 'hadir', 'telat_masuk', 'cepat_pulang', 'tanpa_keterangan', 'cuti_sakit_izin', 'dinas_luar']
+    df_tampil = df_final[kolom_tampil].copy()
+    
+    for col in ['hari_kerja', 'hadir', 'telat_masuk', 'cepat_pulang', 'tanpa_keterangan', 'cuti_sakit_izin', 'dinas_luar']:
+        df_tampil[col] = df_tampil[col].astype(int)
+        
+    df_tampil.columns = ['Nama', 'NIP', 'Gol', 'Status', 'Total Hari Kerja', 'Total Hadir', 'Total Telat (mnt)', 'Total Cepat Pulang (mnt)', 'Total TK (hari)', 'Total Cuti/Izin (hari)', 'Total DL (hari)']
+    df_tampil.index = range(1, len(df_tampil) + 1)
+    
+    # 7. Tombol Unduh
+    excel_data = convert_df_to_excel(df_tampil)
+    st.download_button(label="📥 Download Rekap Tahunan (Excel)", data=excel_data, file_name=f"Rekap_Tahunan_{status_p}_{tahun_p}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    
+    st.dataframe(df_tampil, use_container_width=True)
 
 def menu_buka_kunci():
     st.header("Buka Kunci Absensi Sekolah")
@@ -251,7 +308,8 @@ else:
         if st.session_state.role == 'admin_cabdis':
             pilihan = st.radio("Pilih Menu", ["Dashboard", "Buka Kunci Absensi", "Data Indisipliner PNS", "Data Indisipliner PPPK", "Tambah Akun Admin"])
         else:
-            pilihan = st.radio("Pilih Menu", ["Data Pegawai", "Input Rekap PNS", "Input Rekap PPPK", "Data Indisipliner PNS", "Data Indisipliner PPPK"])
+            # Menu Rekap Tahunan ditambahkan ke pilihan menu admin sekolah
+            pilihan = st.radio("Pilih Menu", ["Data Pegawai", "Input Rekap PNS", "Input Rekap PPPK", "Rekap Tahunan", "Data Indisipliner PNS", "Data Indisipliner PPPK"])
             
         if st.button("Logout"):
             st.session_state.logged_in = False
@@ -262,6 +320,7 @@ else:
     elif pilihan == "Data Pegawai": menu_data_pegawai()
     elif pilihan == "Input Rekap PNS": menu_input_absen("PNS")
     elif pilihan == "Input Rekap PPPK": menu_input_absen("PPPK")
+    elif pilihan == "Rekap Tahunan": menu_rekap_tahunan()
     elif pilihan == "Buka Kunci Absensi": menu_buka_kunci()
     elif pilihan == "Tambah Akun Admin": menu_tambah_akun()
     elif pilihan == "Data Indisipliner PNS": menu_indisipliner("PNS")
